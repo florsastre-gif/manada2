@@ -1,129 +1,100 @@
 import streamlit as st
 import os
-from typing import TypedDict
+import json
+from typing import TypedDict, List
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
 
-# --- 1. ESTILO Y CONTRASTE (FIJO) ---
-st.set_page_config(page_title="Publisher Pro - LangGraph", layout="centered")
+# --- 1. ESTILO TINDER (TIPOGRAFÍA NEGRA) ---
+st.set_page_config(page_title="Match Mascotas - Explorar", layout="centered")
 st.markdown("""
     <style>
     .stApp { background-color: #FFFFFF; }
-    [data-testid="stSidebar"] .stMarkdown, [data-testid="stSidebar"] label, [data-testid="stSidebar"] p {
-        color: #FFFFFF !important;
-    }
-    .tinder-card, .tinder-card h2, .tinder-card p, .tinder-card span, .tinder-card b {
-        color: #000000 !important;
-    }
+    h1, h2, h3, p, label { color: #000000 !important; }
     .tinder-card {
-        padding: 20px; border-radius: 15px; border: 2px solid #EEEEEE;
-        background-color: #F9F9F9; margin-top: 20px;
+        padding: 30px; border-radius: 20px; border: 2px solid #FF4B4B;
+        background-color: #FDFDFD; text-align: center;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.1);
     }
-    .tag {
-        background: #E0E0E0; padding: 4px 12px; border-radius: 10px;
-        font-size: 13px; font-weight: bold; margin-right: 5px; color: #000000 !important;
-    }
+    .tag { background: #FFEBEE; color: #D32F2F !important; padding: 5px 12px; border-radius: 15px; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. DEFINICIÓN DEL ESTADO (LANGGRAPH) ---
-class DogState(TypedDict):
-    datos: dict
-    compliance: str
-    mensaje_error: str
+# --- 2. MOCK INVENTORY (El contrato de App A) ---
+DOGS_DATABASE = [
+    {"id": 1, "name": "Polo", "stage": "Joven", "energy": "Alta", "cats": False, "patio": True, "exp": "Con experiencia", "bio": "Energético y leal."},
+    {"id": 2, "name": "Luna", "stage": "Adulto", "energy": "Baja", "cats": True, "patio": False, "exp": "Primera vez", "bio": "Tranquila, ideal para depto."},
+]
 
-# --- 3. NODOS DEL GRAFO ---
-def nodo_auditor(state: DogState):
-    """Revisa si hay venta o precios en la historia."""
-    texto = state['datos'].get('bio', '')
-    api_key = os.environ.get("GOOGLE_API_KEY")
+# --- 3. ESTRUCTURA LANGGRAPH (Lógica de Match) ---
+class MatchState(TypedDict):
+    user: dict
+    dog: dict
+    score: int
+    reasons: List[str]
+    status: str
+
+def nodo_scoring(state: MatchState):
+    u, d = state['user'], state['dog']
+    score = 100
+    reasons = []
     
-    if not api_key:
-        return {"compliance": "APPROVED"}
+    # Hard Filter: Gatos
+    if u['has_cats'] and not d['cats']:
+        return {"score": 0, "status": "REJECTED", "reasons": ["No apto para hogares con gatos."]}
     
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "Responde REJECTED si hay indicios de venta o precio. De lo contrario APPROVED."),
-        ("human", texto)
-    ])
-    res = (prompt | llm).invoke({"texto": texto})
+    # Soft Filters
+    if u['home_type'] == "Depto" and d['patio']: score -= 30; reasons.append("Prefiere casa con patio.")
+    if u['exp'] == "Primera vez" and d['exp'] == "Con experiencia": score -= 40; reasons.append("Requiere manejo experto.")
     
-    status = "REJECTED" if "REJECTED" in res.content.upper() else "APPROVED"
-    error = "Venta detectada" if status == "REJECTED" else ""
-    return {"compliance": status, "mensaje_error": error}
+    return {"score": max(score, 0), "status": "APPROVED", "reasons": reasons if reasons else ["¡Compatibilidad ideal!"]}
 
-# --- 4. CONSTRUCCIÓN DEL GRAFO ---
-workflow = StateGraph(DogState)
-workflow.add_node("auditor", nodo_auditor)
-workflow.set_entry_point("auditor")
-workflow.add_edge("auditor", END)
-app_graph = workflow.compile()
+workflow = StateGraph(MatchState)
+workflow.add_node("scorer", nodo_scoring)
+workflow.set_entry_point("scorer")
+workflow.add_edge("scorer", END)
+match_engine = workflow.compile()
 
-# --- 5. INTERFAZ STREAMLIT ---
-with st.sidebar:
-    st.markdown("### Configuración")
-    api_key = st.secrets.get("GOOGLE_API_KEY") or st.text_input("API Key:", type="password")
-    if api_key: os.environ["GOOGLE_API_KEY"] = api_key
+# --- 4. INTERFAZ: ONBOARDING Y EXPLORAR ---
+tab_perfil, tab_explorar = st.tabs(["👤 Tu Perfil", "🔥 Explorar Matches"])
 
-st.title("Preparemos su perfil para encontrarle una familia")
+with tab_perfil:
+    st.subheader("Contanos sobre vos")
+    with st.container(border=True):
+        u_home = st.selectbox("Tu hogar", ["Depto", "Casa"])
+        u_cats = st.checkbox("Tengo gatos")
+        u_exp = st.selectbox("Tu experiencia", ["Primera vez", "Con experiencia"])
+        u_act = st.select_slider("Tu ritmo de vida", options=["Bajo", "Medio", "Alto"])
 
-with st.form("perfil_form"):
-    st.subheader("🔹 Datos del Rescatado")
+with tab_explorar:
+    if "dog_idx" not in st.session_state: st.session_state.dog_idx = 0
+    
+    # Ejecutar motor de match
+    perro_actual = DOGS_DATABASE[st.session_state.dog_idx % len(DOGS_DATABASE)]
+    res = match_engine.invoke({
+        "user": {"home_type": u_home, "has_cats": u_cats, "exp": u_exp},
+        "dog": perro_actual
+    })
+    
+    # UI TINDER CARD
+    st.markdown(f"""
+        <div class="tinder-card">
+            <h1 style='color:#FF4B4B !important;'>{perro_actual['name']}</h1>
+            <p><b>{perro_actual['stage']} • Energía {perro_actual['energy']}</b></p>
+            <div style='margin: 15px 0;'>
+                <span class="tag">{'Compatibilidad: ' + str(res['score']) + '%'}</span>
+            </div>
+            <p style='font-style: italic;'>"{perro_actual['bio']}"</p>
+            <div style='text-align: left; background: #f9f9f9; padding: 10px; border-radius: 10px;'>
+                <small><b>¿Por qué matchean?</b></small>
+                <ul>{"".join([f"<li>{r}</li>" for r in res['reasons']])}</ul>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+    
     c1, c2 = st.columns(2)
-    nombre = c1.text_input("Nombre")
-    etapa = c2.selectbox("Etapa", ["Cachorro", "Joven", "Adulto", "Senior"])
-    tamanio = c1.selectbox("Tamaño", ["Chico", "Mediano", "Grande"])
-    energia = c2.select_slider("Nivel de energía", options=["Bajo", "Medio", "Alto"])
-    
-    f1, f2, f3 = st.columns(3)
-    ninos, perros, gatos = f1.checkbox("Apto niños"), f2.checkbox("Apto perros"), f3.checkbox("Apto gatos")
-
-    st.divider()
-    st.subheader("🔹 Requisitos del hogar ideal")
-    h1, h2 = st.columns(2)
-    tipo_hogar = h1.selectbox("Tipo de hogar", ["Departamento", "Casa", "No importa"])
-    patio = h2.selectbox("Patio/Terraza", ["Sí", "No", "Deseable"])
-    tiempo_solo = h1.selectbox("Tiempo solo", ["Tolera", "No tolera"])
-    experiencia = h2.selectbox("Experiencia", ["Primera vez", "Con experiencia"])
-    
-    st.divider()
-    historia = st.text_area("Historia corta", height=100)
-    submit = st.form_submit_button("FINALIZAR PERFIL")
-
-# --- 6. EJECUCIÓN DEL GRAFO ---
-if submit:
-    if not nombre or not historia:
-        st.error("Faltan datos obligatorios.")
-    else:
-        # Iniciamos el estado del grafo
-        initial_state = {
-            "datos": {
-                "nombre": nombre, "etapa": etapa, "tamanio": tamanio, 
-                "energia": energia, "ninos": ninos, "perros": perros, 
-                "gatos": gatos, "tipo_hogar": tipo_hogar, "patio": patio, 
-                "tiempo_solo": tiempo_solo, "experiencia": experiencia, "bio": historia
-            },
-            "compliance": "PENDING",
-            "mensaje_error": ""
-        }
-        
-        with st.spinner("Procesando grafo de validación..."):
-            final_state = app_graph.invoke(initial_state)
-        
-        if final_state["compliance"] == "REJECTED":
-            st.error(f"Bloqueado: {final_state['mensaje_error']}")
-        else:
-            st.success("Perfil validado por el grafo.")
-            st.markdown(f"""
-                <div class="tinder-card">
-                    <h2>{nombre}</h2>
-                    <p><b>{etapa} • {tamanio}</b></p>
-                    <div style='margin: 15px 0;'>
-                        <span class="tag">{'👶 Niños' if ninos else 'No niños'}</span>
-                        <span class="tag">{'🐕 Perros' if perros else 'No perros'}</span>
-                        <span class="tag">⚡ Energía {energia}</span>
-                    </div>
-                    <p>{historia}</p>
-                </div>
-            """, unsafe_allow_html=True)
+    if c1.button("❌ Pasar", use_container_width=True):
+        st.session_state.dog_idx += 1
+        st.rerun()
+    if c2.button("❤️ Me interesa", use_container_width=True):
+        st.success(f"¡Match enviado a la protectora por {perro_actual['name']}!")
